@@ -42,6 +42,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 BLOCK_CAP = 8          # blocks per task before it stops and asks the person
@@ -72,6 +73,8 @@ DEFAULTS = {
 }
 
 DATA = Path(os.environ.get("CLAUDE_PLUGIN_DATA") or Path.home() / ".claude/plugins/data/finish") / "goals"
+REVIEWS = DATA.parent / "reviews.jsonl"   # one line per reviewer or architecture-check run: what it cost
+SESSION = ""                              # the session this hook runs for, so a review's cost joins its session
 
 RULES = """The finish plugin is on in this session. A turn that changes files ends only after the Stop check passes.
 
@@ -563,7 +566,23 @@ VERDICT = ('End your answer with exactly one line of JSON: {"ok": true, "read": 
            'citation does not count: the plugin throws it out.')
 
 
-def run_reviewer(prompt, model, cwd, hosts, dirs, timeout):
+def log_review(kind, model, cwd, started, out, error=""):
+    """Append one reviewer run's tokens and cost to REVIEWS. The run itself is not saved anywhere else."""
+    u = out.get("usage") or {}
+    row = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)), "session": SESSION, "kind": kind,
+           "model": model, "cwd": cwd, "seconds": round(time.time() - started, 1), "error": error,
+           "cost_usd": out.get("total_cost_usd"), "turns": out.get("num_turns"),
+           **{k: u.get(k, 0) for k in ("input_tokens", "cache_creation_input_tokens",
+                                        "cache_read_input_tokens", "output_tokens")},
+           "by_model": {m: {k: v for k, v in mu.items() if k in ("inputTokens", "outputTokens", "cacheReadInputTokens",
+                                                                "cacheCreationInputTokens", "costUSD")}
+                        for m, mu in (out.get("modelUsage") or {}).items()}}
+    REVIEWS.parent.mkdir(parents=True, exist_ok=True)
+    with REVIEWS.open("a") as f:
+        f.write(json.dumps(row) + "\n")
+
+
+def run_reviewer(prompt, model, cwd, hosts, dirs, timeout, kind):
     """One headless Claude Code run that may read, grep, query and fetch the guide's doc sites, never write.
     (verdict dict, '') or (None, why it gave none)."""
     env = dict(os.environ, FINISH_REVIEWER="1")
@@ -578,11 +597,15 @@ def run_reviewer(prompt, model, cwd, hosts, dirs, timeout):
            "Bash(adb install:*)", "Bash(*adb*install*)", "Bash(ssh:*)", "Bash(curl:*)", "Bash(wget:*)"]
     for d in dirs:
         cmd += ["--add-dir", d]
+    started = time.time()
     try:
         r = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
-        result = json.loads(r.stdout).get("result", "")
+        out = json.loads(r.stdout)
     except Exception as e:
+        log_review(kind, model, cwd, started, {}, type(e).__name__)
         return None, f"reviewer did not run ({type(e).__name__})"
+    log_review(kind, model, cwd, started, out)
+    result = out.get("result", "")
     for line in reversed(result.strip().splitlines()):
         line = line.strip().strip("`")
         if line.startswith("{"):
@@ -637,7 +660,7 @@ F. OVERBUILT: it builds more than the ask.
 Not for style, naming, or details the build can settle. {NO_WRITES}
 
 {VERDICT}{tail}"""
-    return run_reviewer(prompt, "opus", root, doc_hosts(guides), local_dirs(guides), ARCH_TIMEOUT)
+    return run_reviewer(prompt, "opus", root, doc_hosts(guides), local_dirs(guides), ARCH_TIMEOUT, "arch")
 
 
 def review(cwd, tier, goal_text, reply, diff, new_files, base, asks, suspects, decisions_file, outside, guides, tail=""):
@@ -699,7 +722,7 @@ THE APPROVED APPROACH:
 Never send it back to do more than the person asked. Do not send it back for style or naming. Be concrete: name the file and line and what must change.
 
 {VERDICT}{tail}"""
-    return run_reviewer(prompt, model, cwd, doc_hosts(guides), local_dirs(guides), REVIEW_TIMEOUT)
+    return run_reviewer(prompt, model, cwd, doc_hosts(guides), local_dirs(guides), REVIEW_TIMEOUT, "review")
 
 
 # ---- the hooks ------------------------------------------------------------------------------------------------------
@@ -1013,4 +1036,5 @@ if __name__ == "__main__":
     if os.environ.get("FINISH_REVIEWER") or os.environ.get("FINISH_CHECK"):   # the reviewer's or a check's own session
         sys.exit(0)
     inp = read_input()
+    SESSION = inp.get("session_id", "")
     {"session_start": session_start, "prompt": on_prompt, "pre": pre, "post": post, "stop": stop}[sys.argv[1]](inp)

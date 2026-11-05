@@ -287,4 +287,26 @@ assert v.get("ungrounded") and len(tails) == 2, "still ungrounded after the seco
 r = subprocess.run([sys.executable, finish.__file__, "stop"], input="{}", text=True, capture_output=True,
                    env=dict(os.environ, FINISH_CHECK="1"))
 assert r.returncode == 0 and r.stdout == ""
+
+# ---- 9. every reviewer run's tokens and cost are written down ---------------------------------------------------
+class Done:
+    stdout = json.dumps({"result": '{"ok": true, "reason": ""}', "total_cost_usd": 0.42, "num_turns": 3,
+                         "usage": {"input_tokens": 10, "cache_creation_input_tokens": 200, "cache_read_input_tokens": 3000,
+                                   "output_tokens": 40},
+                         "modelUsage": {"claude-opus-5-5": {"inputTokens": 10, "outputTokens": 40, "costUSD": 0.42,
+                                                            "webSearchRequests": 0}}})
+real_run = finish.subprocess.run
+finish.SESSION = "s9"
+finish.subprocess.run = lambda *a, **k: Done
+v, err = finish.run_reviewer("p", "opus", repo, [], [], 5, "review")
+def timeout(*a, **k):
+    raise subprocess.TimeoutExpired("claude", 5)
+finish.subprocess.run = timeout
+v2, err2 = finish.run_reviewer("p", "opus", repo, [], [], 5, "arch")
+finish.subprocess.run = real_run
+rows = [json.loads(l) for l in finish.REVIEWS.read_text().splitlines()]
+assert v["ok"] and rows[-2]["session"] == "s9" and rows[-2]["kind"] == "review" and rows[-2]["cost_usd"] == 0.42
+assert rows[-2]["cache_read_input_tokens"] == 3000 and rows[-2]["by_model"]["claude-opus-5-5"] == {
+    "inputTokens": 10, "outputTokens": 40, "costUSD": 0.42}
+assert v2 is None and rows[-1]["kind"] == "arch" and rows[-1]["error"] == "TimeoutExpired", "a run that died is logged too"
 print("ok")
