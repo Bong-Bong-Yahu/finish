@@ -1,0 +1,8 @@
+{
+  "name": "finish",
+  "version": "0.5.0",
+  "description": "Work ends only when it is done, with ceremony that follows size: small changes get the project's checks and a quick review; big or hard-to-undo work needs its goal list and an architecture check of its approach before the first edit, grounded in the vendor's guide for that kind of work and that version; the end review uses the same guides, and an objection must cite a doc line or file:line. Standing decisions guard their files; a slop scan and exit-code checks run under the reviewers; three rejections stop it for the person; long sessions hand approved builds to a fresh helper; a per-task token budget.",
+  "author": {
+    "name": "Bong-Bong-Yahu"
+  }
+}
